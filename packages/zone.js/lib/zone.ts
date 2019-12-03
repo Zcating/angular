@@ -391,6 +391,7 @@ interface UncaughtPromiseError extends Error {
  *
  * Only the `name` property is required (all other are optional).
  */
+// 用于配置 zone 事件的拦截
 interface ZoneSpec {
   /**
    * The name of the zone. Useful when debugging Zones.
@@ -682,9 +683,15 @@ type AmbientZoneDelegate = ZoneDelegate;
 declare var global: NodeJS.Global;
 
 const Zone: ZoneType = (function(global: any) {
-  const performance: {mark(name: string): void; measure(name: string, label: string): void;} =
-      global['performance'];
-  function mark(name: string) { performance && performance['mark'] && performance['mark'](name); }
+  const performance: {
+    mark(name: string): void; 
+    measure(name: string, label: string): void;
+  } = global['performance'];
+  
+  function mark(name: string) { 
+    performance && performance['mark'] && performance['mark'](name); 
+  }
+  
   function performanceMeasure(name: string, label: string) {
     performance && performance['measure'] && performance['measure'](name, label);
   }
@@ -715,6 +722,7 @@ const Zone: ZoneType = (function(global: any) {
     }
   }
 
+  // Zone 的实现
   class Zone implements AmbientZone {
     // tslint:disable-next-line:require-internal-with-underscore
     static __symbol__: (name: string) => string = __symbol__;
@@ -761,26 +769,39 @@ const Zone: ZoneType = (function(global: any) {
     public get name(): string { return this._name; }
 
 
+    // zone 是一个单向链表
     private _parent: Zone|null;
+
+    // zone 的名称
     private _name: string;
+    
+    // 所拥有的属性
     private _properties: {[key: string]: any};
+
+    // zone 的委托，通过调用委托，触发 Zone 回调
     private _zoneDelegate: ZoneDelegate;
 
+    // zone 构造函数
     constructor(parent: Zone|null, zoneSpec: ZoneSpec|null) {
       this._parent = parent;
+      // 默认为 <root>
       this._name = zoneSpec ? zoneSpec.name || 'unnamed' : '<root>';
+
       this._properties = zoneSpec && zoneSpec.properties || {};
-      this._zoneDelegate =
-          new ZoneDelegate(this, this._parent && this._parent._zoneDelegate, zoneSpec);
+
+      this._zoneDelegate = new ZoneDelegate(this, this._parent && this._parent._zoneDelegate, zoneSpec);
     }
 
+    // 获取 zone 中特定的线程
     public get(key: string): any {
       const zone: Zone = this.getZoneWith(key) as Zone;
       if (zone) return zone._properties[key];
     }
 
+    // 获取 zone
     public getZoneWith(key: string): AmbientZone|null {
       let current: Zone|null = this;
+      // 查询zone是否含有这个 key
       while (current) {
         if (current._properties.hasOwnProperty(key)) {
           return current;
@@ -790,11 +811,13 @@ const Zone: ZoneType = (function(global: any) {
       return null;
     }
 
+    // 让 zone 分支
     public fork(zoneSpec: ZoneSpec): AmbientZone {
       if (!zoneSpec) throw new Error('ZoneSpec required!');
       return this._zoneDelegate.fork(this, zoneSpec);
     }
-
+    
+    // 打包特定的函数，使得函数调用的时候能够触发 zone
     public wrap<T extends Function>(callback: T, source: string): T {
       if (typeof callback !== 'function') {
         throw new Error('Expecting function got: ' + callback);
@@ -806,21 +829,23 @@ const Zone: ZoneType = (function(global: any) {
       } as any as T;
     }
 
+    // 将函数作为参数输入，并将其调用。
     public run(callback: Function, applyThis?: any, applyArgs?: any[], source?: string): any;
-    public run<T>(
-        callback: (...args: any[]) => T, applyThis?: any, applyArgs?: any[], source?: string): T {
+    public run<T>(callback: (...args: any[]) => T, applyThis?: any, applyArgs?: any[], source?: string): T {
+      // 当前 zone 的帧
       _currentZoneFrame = {parent: _currentZoneFrame, zone: this};
+      
       try {
+        // 调用 委托 中的 invoke，那么就可以调用 callback，同时触发 zone
         return this._zoneDelegate.invoke(this, callback, applyThis, applyArgs, source);
       } finally {
         _currentZoneFrame = _currentZoneFrame.parent !;
       }
     }
 
+    // 同上，只不过会对对运行的函数抛出的错误进行捕捉，并再转发。
     public runGuarded(callback: Function, applyThis?: any, applyArgs?: any[], source?: string): any;
-    public runGuarded<T>(
-        callback: (...args: any[]) => T, applyThis: any = null, applyArgs?: any[],
-        source?: string) {
+    public runGuarded<T>(callback: (...args: any[]) => T, applyThis: any = null, applyArgs?: any[], source?: string) {
       _currentZoneFrame = {parent: _currentZoneFrame, zone: this};
       try {
         try {
@@ -836,7 +861,9 @@ const Zone: ZoneType = (function(global: any) {
     }
 
 
+    // 运行任务，根据任务的状态和标记来运行这个任务
     runTask(task: Task, applyThis?: any, applyArgs?: any): any {
+      // 保证任务是由当前zone创建的。
       if (task.zone != this) {
         throw new Error(
             'A task can only be run in the zone of creation! (Creation: ' +
@@ -845,22 +872,29 @@ const Zone: ZoneType = (function(global: any) {
       // https://github.com/angular/zone.js/issues/778, sometimes eventTask
       // will run in notScheduled(canceled) state, we should not try to
       // run such kind of task but just return
-
+      // 如果任务的状态为 notScheduled ，并且此时的类型是微任务或者宏任务，那么直接 return
       if (task.state === notScheduled && (task.type === eventTask || task.type === macroTask)) {
         return;
       }
 
+      // 判断是否需要重新运行
       const reEntryGuard = task.state != running;
+      // 重新运行
       reEntryGuard && (task as ZoneTask<any>)._transitionTo(running, scheduled);
+      // 记录任务运行次数
       task.runCount++;
+      // 当前任务的记录变为输入的最新的任务。
       const previousTask = _currentTask;
       _currentTask = task;
       _currentZoneFrame = {parent: _currentZoneFrame, zone: this};
+
       try {
+        // 判断任务类型, 如果任务的内容不是周期性的触发，那么不需要取消函数。
         if (task.type == macroTask && task.data && !task.data.isPeriodic) {
           task.cancelFn = undefined;
         }
         try {
+          // 调用任务
           return this._zoneDelegate.invokeTask(this, task, applyThis, applyArgs);
         } catch (error) {
           if (this._zoneDelegate.handleError(this, error)) {
@@ -870,14 +904,23 @@ const Zone: ZoneType = (function(global: any) {
       } finally {
         // if the task's state is notScheduled or unknown, then it has already been cancelled
         // we should not reset the state to scheduled
+        // 这里的注释意思就是：任务的状态如果是 notScheduled 或者 unknown，那么这个任务早已被取消了。
+        // 我们不应该重新设置状态为 scheduled
         if (task.state !== notScheduled && task.state !== unknown) {
+          // 如果任务类型为 事件类型，并且是周期性的，那么运行这个任务。
+          // 否则，重新设定任务运行次数，同时更新任务。
           if (task.type == eventTask || (task.data && task.data.isPeriodic)) {
+
+            // 根据是否需要重新运行，
             reEntryGuard && (task as ZoneTask<any>)._transitionTo(scheduled, running);
+
           } else {
+
             task.runCount = 0;
+            // 更新任务个数
             this._updateTaskCount(task as ZoneTask<any>, -1);
-            reEntryGuard &&
-                (task as ZoneTask<any>)._transitionTo(notScheduled, running, notScheduled);
+
+            reEntryGuard && (task as ZoneTask<any>)._transitionTo(notScheduled, running, notScheduled);
           }
         }
         _currentZoneFrame = _currentZoneFrame.parent !;
@@ -885,19 +928,23 @@ const Zone: ZoneType = (function(global: any) {
       }
     }
 
+    // 安排任务
     scheduleTask<T extends Task>(task: T): T {
+      // 判断任务是不是为当前的zone
+      // 判断 任务是否已经被重新安排，而且，新的zone不应是是原来的zone的子节点。
       if (task.zone && task.zone !== this) {
         // check if the task was rescheduled, the newZone
         // should not be the children of the original zone
         let newZone: any = this;
         while (newZone) {
           if (newZone === task.zone) {
-            throw Error(`can not reschedule task to ${
-                this.name} which is descendants of the original zone ${task.zone.name}`);
+            throw Error(`can not reschedule task to ${this.name} which is descendants of the original zone ${task.zone.name}`);
           }
           newZone = newZone.parent;
         }
       }
+
+      
       (task as any as ZoneTask<any>)._transitionTo(scheduling, notScheduled);
       const zoneDelegates: ZoneDelegate[] = [];
       (task as any as ZoneTask<any>)._zoneDelegates = zoneDelegates;
@@ -922,27 +969,28 @@ const Zone: ZoneType = (function(global: any) {
       return task;
     }
 
+    // 安排 微任务
     scheduleMicroTask(
         source: string, callback: Function, data?: TaskData,
         customSchedule?: (task: Task) => void): MicroTask {
-      return this.scheduleTask(
-          new ZoneTask(microTask, source, callback, data, customSchedule, undefined));
+      return this.scheduleTask(new ZoneTask(microTask, source, callback, data, customSchedule, undefined));
     }
 
+    // 安排 宏任务
     scheduleMacroTask(
         source: string, callback: Function, data?: TaskData, customSchedule?: (task: Task) => void,
         customCancel?: (task: Task) => void): MacroTask {
-      return this.scheduleTask(
-          new ZoneTask(macroTask, source, callback, data, customSchedule, customCancel));
+      return this.scheduleTask(new ZoneTask(macroTask, source, callback, data, customSchedule, customCancel));
     }
 
+    // 安排 事件任务
     scheduleEventTask(
         source: string, callback: Function, data?: TaskData, customSchedule?: (task: Task) => void,
         customCancel?: (task: Task) => void): EventTask {
-      return this.scheduleTask(
-          new ZoneTask(eventTask, source, callback, data, customSchedule, customCancel));
+      return this.scheduleTask(new ZoneTask(eventTask, source, callback, data, customSchedule, customCancel));
     }
 
+    // 取消任务
     cancelTask(task: Task): any {
       if (task.zone != this)
         throw new Error(
@@ -974,6 +1022,7 @@ const Zone: ZoneType = (function(global: any) {
     }
   }
 
+  // zone spec 的回调实例
   const DELEGATE_ZS: ZoneSpec = {
     name: '',
     onHasTask: (delegate: AmbientZoneDelegate, _: AmbientZone, target: AmbientZone,
@@ -987,19 +1036,26 @@ const Zone: ZoneType = (function(global: any) {
                       any => delegate.cancelTask(target, task)
   };
 
+
+  // Zone 回调类
   class ZoneDelegate implements AmbientZoneDelegate {
+    // 确认当前的 zone
     public zone: Zone;
 
+    // 当前任务数量的计数器
     private _taskCounts: {microTask: number,
                           macroTask: number,
                           eventTask: number} = {'microTask': 0, 'macroTask': 0, 'eventTask': 0};
 
+    // delegate 也是一个链表
     private _parentDelegate: ZoneDelegate|null;
 
+    // 
     private _forkDlgt: ZoneDelegate|null;
     private _forkZS: ZoneSpec|null;
     private _forkCurrZone: Zone|null;
-
+    
+    //
     private _interceptDlgt: ZoneDelegate|null;
     private _interceptZS: ZoneSpec|null;
     private _interceptCurrZone: Zone|null;
@@ -1088,8 +1144,10 @@ const Zone: ZoneType = (function(global: any) {
       const zoneSpecHasTask = zoneSpec && zoneSpec.onHasTask;
       const parentHasTask = parentDelegate && parentDelegate._hasTaskZS;
       if (zoneSpecHasTask || parentHasTask) {
-        // If we need to report hasTask, than this ZS needs to do ref counting on tasks. In such
+        // If we need to report hasTask, then this ZS needs to do ref counting on tasks. In such
         // a case all task related interceptors must go through this ZD. We can't short circuit it.
+        // 此处的意思就是，为了可以获取到任务的实际运行情况，ZS(zone spec) 需要计算任务的引用计数。
+        // 在这种情况下，所有关联了拦截器的任务都必须经过这个 ZD（zone delegate）.
         this._hasTaskZS = zoneSpecHasTask ? zoneSpec : DELEGATE_ZS;
         this._hasTaskDlgt = parentDelegate;
         this._hasTaskDlgtOwner = this;
@@ -1112,12 +1170,14 @@ const Zone: ZoneType = (function(global: any) {
       }
     }
 
+    // 从委托中新建一个zone
     fork(targetZone: Zone, zoneSpec: ZoneSpec): AmbientZone {
       return this._forkZS ?
-          this._forkZS.onFork !(this._forkDlgt !, this.zone, targetZone, zoneSpec) :
+          this._forkZS.onFork!(this._forkDlgt !, this.zone, targetZone, zoneSpec) :
           new Zone(targetZone, zoneSpec);
     }
 
+    // 拦截 zone
     intercept(targetZone: Zone, callback: Function, source: string): Function {
       return this._interceptZS ?
           this._interceptZS.onIntercept !(
@@ -1125,6 +1185,7 @@ const Zone: ZoneType = (function(global: any) {
           callback;
     }
 
+    // 通过zone 调用函数
     invoke(
         targetZone: Zone, callback: Function, applyThis: any, applyArgs?: any[],
         source?: string): any {
@@ -1135,6 +1196,7 @@ const Zone: ZoneType = (function(global: any) {
           callback.apply(applyThis, applyArgs);
     }
 
+    // 捕获错误
     handleError(targetZone: Zone, error: any): boolean {
       return this._handleErrorZS ?
           this._handleErrorZS.onHandleError !(
@@ -1142,6 +1204,7 @@ const Zone: ZoneType = (function(global: any) {
           true;
     }
 
+    // 安排任务
     scheduleTask(targetZone: Zone, task: Task): Task {
       let returnTask: ZoneTask<any> = task as ZoneTask<any>;
       if (this._scheduleTaskZS) {
@@ -1165,7 +1228,9 @@ const Zone: ZoneType = (function(global: any) {
       return returnTask;
     }
 
+    // 调用任务
     invokeTask(targetZone: Zone, task: Task, applyThis: any, applyArgs?: any[]): any {
+      // 如果
       return this._invokeTaskZS ?
           this._invokeTaskZS.onInvokeTask !(
               this._invokeTaskDlgt !, this._invokeTaskCurrZone !, targetZone, task, applyThis,
@@ -1173,6 +1238,8 @@ const Zone: ZoneType = (function(global: any) {
           task.callback.apply(applyThis, applyArgs);
     }
 
+
+    // 取消任务
     cancelTask(targetZone: Zone, task: Task): any {
       let value: any;
       if (this._cancelTaskZS) {
@@ -1186,7 +1253,7 @@ const Zone: ZoneType = (function(global: any) {
       }
       return value;
     }
-
+    // 判断 zone 是否拥有这个任务
     hasTask(targetZone: Zone, isEmpty: HasTaskState) {
       // hasTask should not throw error so other ZoneDelegate
       // can still trigger hasTask callback
@@ -1219,6 +1286,7 @@ const Zone: ZoneType = (function(global: any) {
     }
   }
 
+  // Zone 任务的实现
   class ZoneTask<T extends TaskType> implements Task {
     public type: T;
     public source: string;
@@ -1280,6 +1348,7 @@ const Zone: ZoneType = (function(global: any) {
 
     public cancelScheduleRequest() { this._transitionTo(notScheduled, scheduling); }
 
+    // 转化任务的状态
     // tslint:disable-next-line:require-internal-with-underscore
     _transitionTo(toState: TaskState, fromState1: TaskState, fromState2?: TaskState) {
       if (this._state === fromState1 || this._state === fromState2) {
