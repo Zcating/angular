@@ -133,6 +133,35 @@
  * zones are children of the root zone.
  *
  */
+/**
+ * Zone 的机制是拦截和保持异步事件的追踪。
+ * 
+ * Zone 是一个全局对象，该对象配置了一些关于如何拦截和跟踪异步回调的规则。它的职责如下：
+ * 
+ * 1. 拦截异步任务调度
+ * 2. 包装回调，以进行跨异步操作的错误处理和 Zone 跟踪。
+ * 3. 提供一种方式将数据附加到 zone 上的方法。
+ * 4. 提供一种特定于最后一帧错误处理的上下文。
+ * 5. （拦截 阻塞方法）(此处应该是指 迭代器 function * () {})
+ * 
+ * Zone 本身不执行任何操作，而是依靠其他代码来通过它来路由现有平台API。（Zone.js 通过 Monkey Patch 
+ * 的方式将浏览器的异步API进行patch操作，并通过 Zone 进行重定向以进行拦截。）
+ * 
+ * 以最简单的形式，Zone 允许人们拦截异步的调度和调用操作，并在异步任务之前和之后执行其他代码。 规则使用 
+ * [ZoneConfig] 配置拦截。 在一个系统中可以有多个不同的 Zone 实例，但是在任何给定时间只有一个区域处于
+ * 活动状态，可以使用 [Zone#current] 来检索。
+ * 
+ * ## 回调打包
+ * 
+ * Zones 的一个重要的方面是，它们应该在异步操作中持续存在。 为此，当通过异步API调度将来任务时，有必要捕
+ * 获并随后还原当前 Zone。 例如，如果有一段代码在 Zone B 中运行，并且它将会调用 "setTimeout" 以安排 
+ * scheduleTask 工作，则 "setTimeout" 需要这两点操作，第一、捕获当前的 Zone；第二、将 
+ * "wrapCallback" 包装在代码中，一旦 "wrapCallback" 调用后，那么这段代码便会恢复到当前的 Zone B。 
+ * 这样，控制当前代码的规则将保留在所有即将到来的异步任务中。 可能存在具有不同规则并且与不同异步任务相关联的
+ * 不同 Zone C。 在这些任务被执行完毕后，每个异步 wrapCallback 都会正确还原到对应的 Zone，并为之后的异步
+ * 回调保留该区域。
+ */
+
 interface Zone {
   /**
    *
@@ -720,7 +749,7 @@ const Zone: ZoneType = (function(global: any) {
     } else {
       return global['Zone'];
     }
-  }
+  } 
 
   // Zone 的实现
   class Zone implements AmbientZone {
@@ -1304,8 +1333,13 @@ const Zone: ZoneType = (function(global: any) {
     _state: TaskState = 'notScheduled';
 
     constructor(
-        type: T, source: string, callback: Function, options: TaskData|undefined,
-        scheduleFn: ((task: Task) => void)|undefined, cancelFn: ((task: Task) => void)|undefined) {
+        type: T, 
+        source: string, 
+        callback: Function, 
+        options: TaskData | undefined,
+        scheduleFn: ((task: Task) => void) | undefined, 
+        cancelFn: ((task: Task) => void) | undefined
+    ) {
       this.type = type;
       this.source = source;
       this.data = options;
@@ -1330,6 +1364,7 @@ const Zone: ZoneType = (function(global: any) {
       if (!task) {
         task = this;
       }
+      // 记录嵌套的任务的帧数
       _numberOfNestedTaskFrames++;
       try {
         task.runCount++;
